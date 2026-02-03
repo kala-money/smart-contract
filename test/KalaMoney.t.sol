@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {Test, console} from "forge-std/Test.sol";
 import {BufferFund} from "../src/core/BufferFund.sol";
 import {KalaOracle} from "../src/oracle/KalaOracle.sol";
-import {VolatilityLevel, LiquidityLevel} from "../src/oracle/RiskTypes.sol";
+import {VolatilityLevel, LiquidityLevel} from "../src/libraries/RiskTypes.sol";
 
 contract KalaMoneyTest is Test {
     BufferFund public bufferFund;
@@ -79,20 +79,26 @@ contract KalaMoneyTest is Test {
         assertEq(bufferFund.getBalance(), 1 ether);
     }
 
-    function test_BufferFundWithdraw() public {
+    function test_BufferFundWithdrawTo() public {
         vm.deal(address(bufferFund), 10 ether);
 
+        // Set this test contract as kalaMoney
+        bufferFund.setKalaMoney(address(this));
+
         uint256 balanceBefore = user1.balance;
-        bufferFund.withdraw(user1, 5 ether);
+        bufferFund.withdrawTo(user1, 5 ether);
         assertEq(user1.balance - balanceBefore, 5 ether);
     }
 
-    function test_BufferFundWithdrawOnlyOwner() public {
+    function test_BufferFundWithdrawToOnlyKalaMoney() public {
         vm.deal(address(bufferFund), 10 ether);
 
+        // Set a different address as kalaMoney
+        bufferFund.setKalaMoney(address(0x1234));
+
         vm.prank(user1);
-        vm.expectRevert();
-        bufferFund.withdraw(user1, 5 ether);
+        vm.expectRevert(BufferFund.Unauthorized.selector);
+        bufferFund.withdrawTo(user1, 5 ether);
     }
 }
 

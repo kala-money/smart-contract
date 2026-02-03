@@ -10,15 +10,20 @@ contract BufferFundTest is Test {
     address public owner;
     address public user1;
     address public user2;
+    address public kalaMoney;
 
     event ETHReceived(address indexed from, uint256 amount);
+    event WithdrawTo(address indexed recipient, uint256 amount);
 
     function setUp() public {
         owner = address(this);
         user1 = makeAddr("user1");
         user2 = makeAddr("user2");
+        kalaMoney = makeAddr("kalaMoney");
 
         bufferFund = new BufferFund(owner);
+        // Set kalaMoney address for access control
+        bufferFund.setKalaMoney(kalaMoney);
     }
 
     function test_ReceiveETH() public {
@@ -71,8 +76,8 @@ contract BufferFundTest is Test {
         );
     }
 
-    function test_Withdraw_AsOwner() public {
-        console.log("=== test_Withdraw_AsOwner ===");
+    function test_WithdrawTo_AsKalaMoney() public {
+        console.log("=== test_WithdrawTo_AsKalaMoney ===");
         uint256 depositAmount = 10 ether;
         uint256 withdrawAmount = 3 ether;
         console.log("Deposit amount:", depositAmount);
@@ -83,7 +88,9 @@ contract BufferFundTest is Test {
         uint256 initialBalance = user1.balance;
         console.log("User1 initial balance:", initialBalance);
 
-        bufferFund.withdraw(user1, withdrawAmount);
+        // Only kalaMoney can call withdrawTo
+        vm.prank(kalaMoney);
+        bufferFund.withdrawTo(user1, withdrawAmount);
 
         console.log("User1 balance after withdrawal:", user1.balance);
         console.log(
@@ -103,31 +110,28 @@ contract BufferFundTest is Test {
         );
     }
 
-    function test_RevertWhen_WithdrawMoreThanBalance() public {
-        console.log("=== test_RevertWhen_WithdrawMoreThanBalance ===");
-        uint256 depositAmount = 1 ether;
-        uint256 withdrawAmount = 2 ether;
-        console.log("Deposit amount:", depositAmount);
-        console.log("Withdraw amount (exceeds balance):", withdrawAmount);
-
-        vm.deal(address(bufferFund), depositAmount);
-
-        console.log("Expecting revert: Insufficient balance");
-        vm.expectRevert("Insufficient balance");
-        bufferFund.withdraw(user1, withdrawAmount);
-    }
-
-    function test_RevertWhen_WithdrawAsNonOwner() public {
-        console.log("=== test_RevertWhen_WithdrawAsNonOwner ===");
+    function test_RevertWhen_WithdrawToAsNonKalaMoney() public {
+        console.log("=== test_RevertWhen_WithdrawToAsNonKalaMoney ===");
         uint256 withdrawAmount = 1 ether;
         console.log("Withdraw amount:", withdrawAmount);
-        console.log("Caller (non-owner):", user1);
+        console.log("Caller (non-kalaMoney):", user1);
         vm.deal(address(bufferFund), withdrawAmount);
 
-        console.log("Expecting revert due to non-owner");
+        console.log("Expecting revert due to non-kalaMoney caller");
         vm.prank(user1);
-        vm.expectRevert();
-        bufferFund.withdraw(user1, withdrawAmount);
+        vm.expectRevert(BufferFund.Unauthorized.selector);
+        bufferFund.withdrawTo(user1, withdrawAmount);
+    }
+
+    function test_RevertWhen_OwnerTriesToWithdraw() public {
+        console.log("=== test_RevertWhen_OwnerTriesToWithdraw ===");
+        uint256 withdrawAmount = 1 ether;
+        vm.deal(address(bufferFund), withdrawAmount);
+
+        // Even owner cannot withdraw, only kalaMoney can
+        console.log("Expecting revert: owner is not kalaMoney");
+        vm.expectRevert(BufferFund.Unauthorized.selector);
+        bufferFund.withdrawTo(user1, withdrawAmount);
     }
 
     function test_WithdrawAll() public {
@@ -136,7 +140,8 @@ contract BufferFundTest is Test {
         console.log("Deposit amount:", depositAmount);
         vm.deal(address(bufferFund), depositAmount);
 
-        bufferFund.withdraw(user1, depositAmount);
+        vm.prank(kalaMoney);
+        bufferFund.withdrawTo(user1, depositAmount);
 
         console.log(
             "BufferFund balance after withdrawal:",
@@ -159,11 +164,11 @@ contract BufferFundTest is Test {
         assertEq(bufferFund.getBalance(), amount, "Fuzz: Balance incorrect");
     }
 
-    function testFuzz_Withdraw(
+    function testFuzz_WithdrawTo(
         uint256 depositAmount,
         uint256 withdrawAmount
     ) public {
-        console.log("=== testFuzz_Withdraw ===");
+        console.log("=== testFuzz_WithdrawTo ===");
         depositAmount = bound(depositAmount, 1 ether, 1000 ether);
         withdrawAmount = bound(withdrawAmount, 0.1 ether, depositAmount);
         console.log("Fuzz deposit amount:", depositAmount);
@@ -171,7 +176,8 @@ contract BufferFundTest is Test {
 
         vm.deal(address(bufferFund), depositAmount);
 
-        bufferFund.withdraw(user1, withdrawAmount);
+        vm.prank(kalaMoney);
+        bufferFund.withdrawTo(user1, withdrawAmount);
 
         console.log(
             "BufferFund balance after withdrawal:",
@@ -206,7 +212,8 @@ contract BufferFundTest is Test {
         );
         assertEq(bufferFund.getBalance(), address(bufferFund).balance);
 
-        bufferFund.withdraw(user1, 2 ether);
+        vm.prank(kalaMoney);
+        bufferFund.withdrawTo(user1, 2 ether);
         console.log(
             "After withdrawal - getBalance():",
             bufferFund.getBalance()
@@ -218,26 +225,24 @@ contract BufferFundTest is Test {
         assertEq(bufferFund.getBalance(), address(bufferFund).balance);
     }
 
-    function test_OwnershipCheck() public {
-        console.log("=== test_OwnershipCheck ===");
-        // Verify current owner
-        console.log("Contract owner:", bufferFund.owner());
-        console.log("Expected owner:", owner);
-        assertEq(bufferFund.owner(), owner, "Initial owner incorrect");
+    function test_SetKalaMoney_OnlyOwner() public {
+        console.log("=== test_SetKalaMoney_OnlyOwner ===");
+        address newKalaMoney = makeAddr("newKalaMoney");
 
-        // Only owner can withdraw
-        vm.deal(address(bufferFund), 1 ether);
-
-        // Non-owner cannot withdraw
-        console.log("Testing non-owner withdrawal (should revert)");
+        // Non-owner cannot set kalaMoney
         vm.prank(user1);
         vm.expectRevert();
-        bufferFund.withdraw(user2, 1 ether);
+        bufferFund.setKalaMoney(newKalaMoney);
 
-        // Owner can withdraw
-        console.log("Testing owner withdrawal");
-        bufferFund.withdraw(user2, 1 ether);
-        console.log("User2 balance after owner withdrawal:", user2.balance);
-        assertEq(user2.balance, 1 ether, "Owner withdrawal failed");
+        // Owner can set kalaMoney
+        bufferFund.setKalaMoney(newKalaMoney);
+        assertEq(bufferFund.kalaMoney(), newKalaMoney, "kalaMoney not updated");
+    }
+
+    function test_SetKalaMoney_RevertOnZeroAddress() public {
+        console.log("=== test_SetKalaMoney_RevertOnZeroAddress ===");
+
+        vm.expectRevert(BufferFund.InvalidAddress.selector);
+        bufferFund.setKalaMoney(address(0));
     }
 }

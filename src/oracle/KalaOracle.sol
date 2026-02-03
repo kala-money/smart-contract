@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {VolatilityLevel, LiquidityLevel} from "./RiskTypes.sol";
+import {VolatilityLevel, LiquidityLevel} from "../libraries/RiskTypes.sol";
 
 contract KalaOracle is Ownable {
     uint256 public price;
