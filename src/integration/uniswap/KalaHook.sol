@@ -18,6 +18,7 @@ import {FixedPoint96} from "v4-core/libraries/FixedPoint96.sol";
 import {KalaOracle} from "../../oracle/KalaOracle.sol";
 import {PriceLib} from "../../libraries/PriceLib.sol";
 import {IChainlinkFeed} from "../../interfaces/IChainlinkFeed.sol";
+import {PoolId} from "v4-core/types/PoolId.sol";
 
 contract KalaHook is BaseHook {
     using StateLibrary for IPoolManager;
@@ -28,25 +29,20 @@ contract KalaHook is BaseHook {
     IChainlinkFeed public immutable ethUsdFeed;
     address public immutable kalaToken;
 
-    uint256 public constant MAX_DEVIATION_BPS = 500;
     uint256 public constant BPS = 10000;
     uint256 public constant PRECISION = 1e18;
 
     error InvalidOracle();
     error InvalidFeed();
     error InvalidToken();
-    error PriceDeviationTooHigh(
-        uint256 spotPrice,
-        uint256 targetPrice,
-        uint256 deviation
-    );
     error NegativePrice();
     error ZeroDenominator();
 
     event OracleCheck(
         uint256 oraclePriceWad,
         uint256 poolPriceWad,
-        uint256 deviationBps
+        uint256 deviationBps,
+        uint24 appliedFee
     );
 
     constructor(
@@ -89,10 +85,39 @@ contract KalaHook is BaseHook {
             });
     }
 
+    function _getSlot0(
+        PoolId poolId
+    )
+        internal
+        view
+        returns (
+            uint160 sqrtPriceX96,
+            int24 tick,
+            uint24 protocolFee,
+            uint24 lpFee
+        )
+    {
+        bytes32 POOLS_SLOT = bytes32(uint256(4));
+        bytes32 slot = keccak256(
+            abi.encodePacked(PoolId.unwrap(poolId), POOLS_SLOT)
+        );
+        bytes32 data = poolManager.extsload(slot);
+
+        assembly {
+            sqrtPriceX96 := and(
+                data,
+                0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+            )
+            tick := signextend(2, shr(160, data))
+            protocolFee := and(shr(184, data), 0xFFFFFF)
+            lpFee := and(shr(208, data), 0xFFFFFF)
+        }
+    }
+
     function _beforeSwap(
         address, // sender
         PoolKey calldata key,
-        SwapParams calldata params,
+        SwapParams calldata, // params
         bytes calldata // hookData
     ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
         bool isCurrency0Kala = Currency.unwrap(key.currency0) == kalaToken;
@@ -112,34 +137,30 @@ contract KalaHook is BaseHook {
 
         uint256 currentPriceWad = _getPoolPriceWad(sqrtPriceX96);
 
-        uint256 lowerBound = (targetPriceWad * (BPS - MAX_DEVIATION_BPS)) / BPS;
-        uint256 upperBound = (targetPriceWad * (BPS + MAX_DEVIATION_BPS)) / BPS;
+        uint256 deviation = currentPriceWad > targetPriceWad
+            ? currentPriceWad - targetPriceWad
+            : targetPriceWad - currentPriceWad;
 
-        bool isWithinBounds = currentPriceWad >= lowerBound &&
-            currentPriceWad <= upperBound;
+        uint256 deviationBps = (deviation * BPS) / targetPriceWad;
 
-        if (!isWithinBounds) {
-            if (currentPriceWad < lowerBound) {
-                if (params.zeroForOne) {
-                    revert PriceDeviationTooHigh(
-                        currentPriceWad,
-                        targetPriceWad,
-                        0
-                    );
-                }
-            } else if (currentPriceWad > upperBound) {
-                if (!params.zeroForOne) {
-                    revert PriceDeviationTooHigh(
-                        currentPriceWad,
-                        targetPriceWad,
-                        0
-                    );
-                }
-            }
+        uint256 fee = 3000 + (deviationBps * 50);
+
+        if (fee > 100000) {
+            fee = 100000;
         }
-        emit OracleCheck(targetPriceWad, currentPriceWad, 0);
 
-        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        emit OracleCheck(
+            targetPriceWad,
+            currentPriceWad,
+            deviationBps,
+            uint24(fee)
+        );
+
+        return (
+            this.beforeSwap.selector,
+            BeforeSwapDeltaLibrary.ZERO_DELTA,
+            uint24(fee)
+        );
     }
 
     function _getTargetPrice(
